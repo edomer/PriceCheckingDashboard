@@ -3,11 +3,10 @@ import sqlite3
 import pandas as pd
 import plotly.express as px
 import os
-import zipfile
 import threading
 import requests
-from requests.exceptions import RequestException
 from contextlib import contextmanager
+from matplotlib.colors import to_rgba
 
 
 # Set page config
@@ -18,6 +17,63 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+
+# Custom CSS for color theming
+def set_custom_theme():
+    primary_color = "#CB9007"  # Gold
+    background_color = "#2C3E50"  # Dark blue
+    text_color = "#ECF0F1"  # Light gray
+    secondary_background = "#3498DB"  # Blue
+
+    custom_css = f"""
+    <style>
+    /* Main page */
+    .stApp {{
+        background-color: {background_color};
+        color: {text_color};
+    }}
+
+    /* Headers */
+    h1, h2, h3, h4, h5, h6 {{
+        color: {primary_color};
+    }}
+
+    /* Sidebar */
+    [data-testid="stSidebar"] {{
+        background-color: {background_color};
+    }}
+
+    /* Buttons */
+    .stButton>button {{
+        background-color: {primary_color};
+        color: {background_color};
+        border-color: {primary_color};
+    }}
+
+    /* Input widgets */
+    .stTextInput>div>div>input, 
+    .stSelectbox>div>div>select,
+    .stSlider>div>div>div>div {{
+        background-color: {secondary_background};
+        color: {text_color};
+    }}
+
+    /* Dataframes */
+    .stDataFrame {{
+        background-color: {secondary_background};
+    }}
+
+    /* Plotly charts */
+    .js-plotly-plot .plotly {{
+        background-color: {background_color} !important;
+    }}
+    </style>
+    """
+    st.markdown(custom_css, unsafe_allow_html=True)
+
+
+# Apply the theme at the start of your app
+set_custom_theme()
 
 # =============================================
 # Thread-safe DataModel class (with all methods)
