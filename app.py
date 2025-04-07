@@ -6,88 +6,45 @@ import os
 import threading
 import requests
 from contextlib import contextmanager
-from matplotlib.colors import to_rgba
 
 
 # Set page config
 st.set_page_config(
-    page_title="Árstatisztika Vizualizáció",
+    page_title="Árfigyelő",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
 
-# Custom CSS for color theming
-def set_custom_theme():
-    primary_color = "#CB9007"  # Gold
-    background_color = "#2C3E50"  # Dark blue
-    text_color = "#ECF0F1"  # Light gray
-    secondary_background = "#3498DB"  # Blue
-
-    custom_css = f"""
-    <style>
-    /* Main page */
-    .stApp {{
-        background-color: {background_color};
-        color: {text_color};
-    }}
-
-    /* Headers */
-    h1, h2, h3, h4, h5, h6 {{
-        color: {primary_color};
-    }}
-
-    /* Sidebar */
-    [data-testid="stSidebar"] {{
-        background-color: {background_color};
-    }}
-
-    /* Buttons */
-    .stButton>button {{
-        background-color: {primary_color};
-        color: {background_color};
-        border-color: {primary_color};
-    }}
-
-    /* Input widgets */
-    .stTextInput>div>div>input, 
-    .stSelectbox>div>div>select,
-    .stSlider>div>div>div>div {{
-        background-color: {secondary_background};
-        color: {text_color};
-    }}
-
-    /* Dataframes */
-    .stDataFrame {{
-        background-color: {secondary_background};
-    }}
-
-    /* Plotly charts */
-    .js-plotly-plot .plotly {{
-        background-color: {background_color} !important;
-    }}
-    </style>
-    """
-    st.markdown(custom_css, unsafe_allow_html=True)
-
-
-# Apply the theme at the start of your app
-set_custom_theme()
 
 # =============================================
 # Thread-safe DataModel class (with all methods)
 # =============================================
 
 class DataModel:
-    def __init__(self, db_name='prices.db'):
+    def __init__(self, db_name=None):  # Changed from 'prices.db' to None
         self.db_name = db_name
         self.lock = threading.Lock()
-        self._initialize_database()
+        if db_name:  # Only initialize if db_name is provided
+            self._initialize_database()
+
+    def is_database_empty(self):
+        """Check if the database has any products"""
+        if not self.db_name:  # Add this check
+            return True
+
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM products")
+            count = cursor.fetchone()[0]
+            return count == 0
 
     @contextmanager
     def _get_connection(self):
         """Thread-safe connection context manager"""
+        if not self.db_name:  # Add this check
+            raise ValueError("No database selected")
         conn = sqlite3.connect(self.db_name)
         try:
             yield conn
@@ -191,6 +148,8 @@ class DataModel:
     def switch_database(self, db_name):
         """Switch to a different database file"""
         self.db_name = db_name
+
+
 
     def get_prices(self, product_ids, start_date, end_date, is_monthly):
         """Get prices for given products and date range - fixed version"""
@@ -390,7 +349,8 @@ class DataModel:
 
 # Initialize the model in session state
 if 'model' not in st.session_state:
-    st.session_state.model = DataModel()
+    st.session_state.model = DataModel(db_name=None)  # No default database
+    st.session_state.products_table = pd.DataFrame(columns=['id', 'name'])
 
 # Initialize table data in session state
 if 'products_table' not in st.session_state:
@@ -407,10 +367,23 @@ with st.sidebar:
     with st.expander("Adatbázis kezelése", expanded=False):
         # Database selection dropdown
         db_files = [f for f in os.listdir() if f.endswith('.db')]
-        selected_db = st.selectbox("Aktív adatbázis", db_files, key='db_selector')
-        if selected_db and selected_db != st.session_state.model.db_name:
-            st.session_state.model.switch_database(selected_db)
-            st.session_state.products_table = st.session_state.model.get_products_table_data()
+        selected_db = st.selectbox(
+            "Aktív adatbázis",
+            options=db_files,
+            key='db_selector',
+            index=None,  # No default selection
+            placeholder="Válasszon adatbázist...",
+        )
+        if selected_db:
+            try:
+                if not hasattr(st.session_state, 'model') or selected_db != getattr(st.session_state.model, 'db_name',
+                                                                                    None):
+                    st.session_state.model = DataModel(selected_db)
+                    if st.session_state.model.is_database_empty():
+                        st.warning("A kiválasztott adatbázis üres!")
+                    st.session_state.products_table = st.session_state.model.get_products_table_data()
+            except Exception as e:
+                st.error(f"Hiba az adatbázis betöltésekor: {str(e)}")
 
         # File uploader for manual CSV import
         uploaded_file = st.file_uploader("Kézi CSV importálás", type=['csv'])
@@ -464,247 +437,272 @@ with st.sidebar:
                 except Exception as e:
                     st.error(f"Váratlan hiba: {str(e)}")
 
-# Create main columns (100% width for the right column now)
-left_col, right_col = st.columns([4, 6], gap="medium")
+# =============================================
+# Main UI - Modified with Empty State Handling
+# =============================================
 
-# LEFT COLUMN - Product table with search and sorting
-with left_col:
-    st.header("Terméklista")
+# Only show content if a database is selected AND has data
+if (hasattr(st.session_state, 'model') and st.session_state.model.db_name and not st.session_state.model.is_database_empty()):    # Create main columns (100% width for the right column now)
+    left_col, right_col = st.columns([4, 6], gap="medium")
 
-    # Sorting options
-    st.subheader("Rendezés")
+    # LEFT COLUMN - Product table with search and sorting
+    with left_col:
+        st.header("Terméklista")
 
-    # Date range for sorting
-    dates = st.session_state.model.get_available_dates()
-    if dates:
-        sort_start, sort_end = st.select_slider(
-            "Rendezési időszak",
-            options=dates,
-            value=(dates[0], dates[-1]))
+        # Sorting options
+        st.subheader("Rendezés")
 
-        # Sorting method selection - Modified to have first item as default
-        sort_method = st.selectbox(
-            "Rendezési szempont",
-            ["Legnagyobb árkülönbség", "Legkisebb árkülönbség", "Átlagár a kiválasztott években"],
-            index=0
-        )
+        # Date range for sorting
+        dates = st.session_state.model.get_available_dates()
+        if dates:
+            sort_start, sort_end = st.select_slider(
+                "Rendezési időszak",
+                options=dates,
+                value=(dates[0], dates[-1]))
 
-        # Sort order toggle
-        if sort_method:  # Only show if a method is selected
-            # Initialize in session state if not exists
-            if 'sort_ascending' not in st.session_state:
-                st.session_state.sort_ascending = True
-
-            # Create the toggle with dynamic label
-            sort_ascending = st.toggle(
-                "Csökkenő sorrend" if st.session_state.sort_ascending else "Növekvő sorrend",
-                value=st.session_state.sort_ascending,
-                key="sort_order_toggle"
+            # Sorting method selection - Modified to have first item as default
+            sort_method = st.selectbox(
+                "Rendezési szempont",
+                ["Legnagyobb árkülönbség", "Legkisebb árkülönbség", "Átlagár a kiválasztott években"],
+                index=0
             )
 
-            # Update session state if changed
-            if sort_ascending != st.session_state.sort_ascending:
-                st.session_state.sort_ascending = sort_ascending
-                st.rerun()  # This will refresh to show the new label
+            # Sort order toggle
+            if sort_method:  # Only show if a method is selected
+                # Initialize in session state if not exists
+                if 'sort_ascending' not in st.session_state:
+                    st.session_state.sort_ascending = True
+
+                # Create the toggle with dynamic label
+                sort_ascending = st.toggle(
+                    "Csökkenő sorrend" if st.session_state.sort_ascending else "Növekvő sorrend",
+                    value=st.session_state.sort_ascending,
+                    key="sort_order_toggle"
+                )
+
+                # Update session state if changed
+                if sort_ascending != st.session_state.sort_ascending:
+                    st.session_state.sort_ascending = sort_ascending
+                    st.rerun()  # This will refresh to show the new label
 
 
-        # Sort button
-        if st.button("Rendez") and sort_method:
-            st.session_state.products_table = st.session_state.model.get_products_table_data(
-                sort_start, sort_end, sort_method, sort_ascending)
+            # Sort button
+            if st.button("Rendez") and sort_method:
+                st.session_state.products_table = st.session_state.model.get_products_table_data(
+                    sort_start, sort_end, sort_method, sort_ascending)
 
-        # Change the search text input to have placeholder text
-        search_term = st.text_input("Keresés terméknév alapján", "", placeholder="Keresés")
+            # Change the search text input to have placeholder text
+            search_term = st.text_input("Keresés terméknév alapján", "", placeholder="Keresés")
 
-        # Display filtered and sorted table
-        if search_term:
-            display_df = st.session_state.products_table[
-                st.session_state.products_table['name'].str.contains(search_term, case=False)]
-        else:
-            display_df = st.session_state.products_table
+            # Display filtered and sorted table
+            if search_term:
+                display_df = st.session_state.products_table[
+                    st.session_state.products_table['name'].str.contains(search_term, case=False)]
+            else:
+                display_df = st.session_state.products_table
 
-        # Format the table display
-        formatted_df = display_df.copy()
-        formatted_df = display_df.copy()
-        if 'start_price' in formatted_df.columns:
-            formatted_df['start_price'] = formatted_df['start_price'].apply(
-                lambda x: f"{int(x):,} Ft".replace(",", " ") if pd.notnull(x) else "-")
-        if 'end_price' in formatted_df.columns:
-            formatted_df['end_price'] = formatted_df['end_price'].apply(
-                lambda x: f"{int(x):,} Ft".replace(",", " ") if pd.notnull(x) else "-")
-        if 'price_diff' in formatted_df.columns:
-            formatted_df['price_diff'] = formatted_df['price_diff'].apply(
-                lambda x: f"{int(x):,} Ft".replace(",", " ") if pd.notnull(x) else "-")
-        if 'avg_price' in formatted_df.columns:
-            formatted_df['avg_price'] = formatted_df['avg_price'].apply(
-                lambda x: f"{int(x):,} Ft".replace(",", " ") if pd.notnull(x) else "-")
+            # Format the table display
+            formatted_df = display_df.copy()
+            if 'start_price' in formatted_df.columns:
+                formatted_df['start_price'] = formatted_df['start_price'].apply(
+                    lambda x: f"{int(x):,} Ft".replace(",", " ") if pd.notnull(x) else "-")
+            if 'end_price' in formatted_df.columns:
+                formatted_df['end_price'] = formatted_df['end_price'].apply(
+                    lambda x: f"{int(x):,} Ft".replace(",", " ") if pd.notnull(x) else "-")
+            if 'price_diff' in formatted_df.columns:
+                formatted_df['price_diff'] = formatted_df['price_diff'].apply(
+                    lambda x: f"{int(x):,} Ft".replace(",", " ") if pd.notnull(x) else "-")
+            if 'avg_price' in formatted_df.columns:
+                formatted_df['avg_price'] = formatted_df['avg_price'].apply(
+                    lambda x: f"{int(x):,} Ft".replace(",", " ") if pd.notnull(x) else "-")
 
-        # Display the table
-        st.dataframe(
-            formatted_df,
-            column_config={
-                "id": None,
-                "name": "Terméknév",
-                "start_price": "Kezdő ár",
-                "end_price": "Záró ár",
-                "price_diff": "Árkülönbség",
-                "avg_price": "Átlagár"},
-            hide_index=True,
-            use_container_width=True,
-            height=600)
+            # Display the table
+            st.dataframe(
+                formatted_df,
+                column_config={
+                    "id": None,
+                    "name": "Terméknév",
+                    "start_price": "Kezdő ár",
+                    "end_price": "Záró ár",
+                    "price_diff": "Árkülönbség",
+                    "avg_price": "Átlagár"},
+                hide_index=True,
+                use_container_width=True,
+                height=600)
 
-# RIGHT COLUMN - Visualization only
-with right_col:
-    # Visualization section
-    st.header("Ábrázolás")
+    # RIGHT COLUMN - Visualization only
+    with right_col:
+        # Visualization section
+        st.header("Ábrázolás")
 
-    # Get selected products from table
-    if not st.session_state.products_table.empty:
-        selected_indices = st.multiselect(
-            "Válasszon termékeket az ábrázoláshoz",
-            options=st.session_state.products_table['name'].tolist(),
-            default=st.session_state.products_table['name'].iloc[0] if len(
-                st.session_state.products_table) > 0 else None
-        )
+        # Get selected products from table
+        if not st.session_state.products_table.empty:
+            selected_indices = st.multiselect(
+                "Válasszon termékeket az ábrázoláshoz",
+                placeholder="Ide kattintva tud választani a listából",
+                options=st.session_state.products_table['name'].tolist(),
+                default=st.session_state.products_table['name'].iloc[0] if len(
+                    st.session_state.products_table) > 0 else None
+            )
 
-    # Date range selection for visualization
-    if dates:
-        viz_start, viz_end = st.select_slider(
-            "Ábrázolási időszak",
-            options=dates,
-            value=(dates[0], dates[-1]))
+        # Date range selection for visualization
+        if dates:
+            viz_start, viz_end = st.select_slider(
+                "Ábrázolási időszak",
+                options=dates,
+                value=(dates[0], dates[-1]))
 
-        # Plot type selection
-        plot_type = st.selectbox(
-            "Ábrázolás típusa",
-            ["Vonaldiagram", "Pontdiagram", "Oszlopdiagram", "Területdiagram"],
-            index=0
-        )
+            # Plot type selection
+            plot_type = st.selectbox(
+                "Ábrázolás típusa",
+                ["Vonaldiagram", "Pontdiagram", "Oszlopdiagram", "Területdiagram"],
+                index=0
+            )
 
-        # Analysis button
-        if st.button("Elemzés indítása") and selected_indices and dates:
-            try:
-                product_ids = st.session_state.products_table[
-                    st.session_state.products_table['name'].isin(selected_indices)
-                ]['id'].tolist()
+            # Analysis button
+            if st.button("Megjelenítés") and selected_indices and dates:
+                try:
+                    product_ids = st.session_state.products_table[
+                        st.session_state.products_table['name'].isin(selected_indices)
+                    ]['id'].tolist()
 
-                is_monthly = '-' in viz_start
+                    is_monthly = '-' in viz_start
 
-                # Get prices for each product individually
-                all_prices = []
-                for pid in product_ids:
-                    prices = st.session_state.model.get_prices(
-                        [pid],
-                        viz_start,
-                        viz_end,
-                        is_monthly
-                    )
-                    all_prices.extend(prices)
+                    # Get prices for each product individually
+                    all_prices = []
+                    for pid in product_ids:
+                        prices = st.session_state.model.get_prices(
+                            [pid],
+                            viz_start,
+                            viz_end,
+                            is_monthly
+                        )
+                        all_prices.extend(prices)
 
-                if not all_prices:
-                    st.warning("Nincsenek adatok a kiválasztott tartományban a kiválasztott termék(ek)hez.")
-                else:
-                    # Convert to DataFrame for plotting
-                    df = pd.DataFrame(all_prices, columns=['product_id', 'year', 'month', 'price'])
-                    df['product'] = df['product_id'].map(
-                        st.session_state.products_table.set_index('id')['name'].to_dict()
-                    )
-
-                    # Create date string for display
-                    if is_monthly:
-                        df['date_str'] = df['year'].astype(str) + '-' + df['month'].astype(str).str.zfill(2)
+                    if not all_prices:
+                        st.warning("Nincsenek adatok a kiválasztott tartományban a kiválasztott termék(ek)hez.")
                     else:
-                        df['date_str'] = df['year'].astype(str)
-
-                    # Create plot based on selected type
-                    fig = None
-                    if plot_type == "Vonaldiagram":
-                        fig = px.line(
-                            df,
-                            x='date_str',
-                            y='price',
-                            color='product',
-                            title="Árváltozás időbeli alakulása",
-                            labels={'price': 'Ár (Ft)', 'date_str': 'Dátum'}
-                        )
-                    elif plot_type == "Pontdiagram":
-                        fig = px.scatter(
-                            df,
-                            x='date_str',
-                            y='price',
-                            color='product',
-                            title="Árváltozás időbeli alakulása",
-                            labels={'price': 'Ár (Ft)', 'date_str': 'Dátum'}
-                        )
-                    elif plot_type == "Oszlopdiagram":
-                        fig = px.bar(
-                            df,
-                            x='date_str',
-                            y='price',
-                            color='product',
-                            barmode='group',
-                            title="Árváltozás időbeli alakulása",
-                            labels={'price': 'Ár (Ft)', 'date_str': 'Dátum'}
-                        )
-                    elif plot_type == "Területdiagram":
-                        fig = px.area(
-                            df,
-                            x='date_str',
-                            y='price',
-                            color='product',
-                            title="Árváltozás időbeli alakulása",
-                            labels={'price': 'Ár (Ft)', 'date_str': 'Dátum'}
+                        # Convert to DataFrame for plotting
+                        df = pd.DataFrame(all_prices, columns=['product_id', 'year', 'month', 'price'])
+                        df['product'] = df['product_id'].map(
+                            st.session_state.products_table.set_index('id')['name'].to_dict()
                         )
 
-                    if fig:
-                        # Create formatted date string with dots (only used for x-axis)
+                        # Create date string for display
                         if is_monthly:
-                            df['formatted_date'] = df['year'].astype(str) + '.' + df['month'].astype(str).str.zfill(
-                                2) + '.'
+                            df['date_str'] = df['year'].astype(str) + '-' + df['month'].astype(str).str.zfill(2)
                         else:
-                            df['formatted_date'] = df['year'].astype(str) + '.'  # Just year with dot
+                            df['date_str'] = df['year'].astype(str)
 
-                        # Custom hover template WITHOUT date (since it's already visible on x-axis)
-                        hovertemplate = (
-                                "<b>%{fullData.name}</b><br>" +  # Product name only
-                                "Ár: %{y:,.0f} Ft".replace(",", " ") +  # Space as a thousand separator
-                                "<extra></extra>"  # Formatted price
-                        )
+                        # Create plot based on selected type
+                        fig = None
+                        if plot_type == "Vonaldiagram":
+                            fig = px.line(
+                                df,
+                                x='date_str',
+                                y='price',
+                                color='product',
+                                title="Árváltozás időbeli alakulása",
+                                labels={'price': 'Ár (Ft)', 'date_str': 'Dátum'}
+                            )
+                        elif plot_type == "Pontdiagram":
+                            fig = px.scatter(
+                                df,
+                                x='date_str',
+                                y='price',
+                                color='product',
+                                title="Árváltozás időbeli alakulása",
+                                labels={'price': 'Ár (Ft)', 'date_str': 'Dátum'}
+                            )
+                        elif plot_type == "Oszlopdiagram":
+                            fig = px.bar(
+                                df,
+                                x='date_str',
+                                y='price',
+                                color='product',
+                                barmode='group',
+                                title="Árváltozás időbeli alakulása",
+                                labels={'price': 'Ár (Ft)', 'date_str': 'Dátum'}
+                            )
+                        elif plot_type == "Területdiagram":
+                            fig = px.area(
+                                df,
+                                x='date_str',
+                                y='price',
+                                color='product',
+                                title="Árváltozás időbeli alakulása",
+                                labels={'price': 'Ár (Ft)', 'date_str': 'Dátum'}
+                            )
 
-                        # Apply to all traces
-                        for trace in fig.data:
-                            trace.update(
-                                hovertemplate=hovertemplate,
-                                hoverinfo='skip',
-                                hoverlabel=dict(
-                                    bgcolor="white",
-                                    font_size=14,
-                                    font_family="Arial"
+                        if fig:
+                            # Create formatted date string with dots (only used for x-axis)
+                            if is_monthly:
+                                df['formatted_date'] = df['year'].astype(str) + '.' + df['month'].astype(str).str.zfill(
+                                    2) + '.'
+                            else:
+                                df['formatted_date'] = df['year'].astype(str) + '.'  # Just year with dot
+
+                            # Custom hover template WITHOUT date (since it's already visible on x-axis)
+                            hovertemplate = (
+                                    "<b>%{fullData.name}</b><br>" +  # Product name only
+                                    "Ár: %{y:,.0f} Ft".replace(",", " ") +  # Space as a thousand separator
+                                    "<extra></extra>"  # Formatted price
+                            )
+
+                            # Apply to all traces
+                            for trace in fig.data:
+                                trace.update(
+                                    hovertemplate=hovertemplate,
+                                    hoverinfo='skip',
+                                    hoverlabel=dict(
+                                        bgcolor="white",
+                                        font_size=16,
+                                        font_family="Arial"
+                                    )
                                 )
+
+                            # Update x-axis to show formatted dates
+                            if is_monthly:
+                                fig.update_xaxes(
+                                    tickformat="%Y.%m."  # Shows as "2023.03." on axis
+                                )
+                            else:
+                                fig.update_xaxes(
+                                    tickformat="%Y."  # Shows as "2023." on axis
+                                )
+
+                            # Rest of layout config
+                            fig.update_layout(
+                                hovermode='x unified',
+                                xaxis_title='Dátum',
+                                yaxis_title='Ár (Ft)',
+                                legend_title='Termékek',
+                                height=600,
+                                separators="., "  # This sets space as thousand separator
                             )
 
-                        # Update x-axis to show formatted dates
-                        if is_monthly:
-                            fig.update_xaxes(
-                                tickformat="%Y.%m."  # Shows as "2023.03." on axis
-                            )
-                        else:
-                            fig.update_xaxes(
-                                tickformat="%Y."  # Shows as "2023." on axis
-                            )
-
-                        # Rest of layout config
-                        fig.update_layout(
-                            hovermode='x unified',
-                            xaxis_title='Dátum',
-                            yaxis_title='Ár (Ft)',
-                            legend_title='Termékek',
-                            height=600,
-                            separators="., "  # This sets space as thousand separator
-                        )
-
-                        st.plotly_chart(fig, use_container_width=True)
+                            st.plotly_chart(fig, use_container_width=True)
 
 
-            except Exception as e:
-                st.error(f"Hiba történt az ábrázolás során: {str(e)}")
+                except Exception as e:
+                    st.error(f"Hiba történt az ábrázolás során: {str(e)}")
+else:
+    # Show empty state message
+    if not hasattr(st.session_state, 'model') or not st.session_state.model.db_name:
+        st.warning("""
+            **Nincs kiválasztva adatbázis!**  
+            Kérjük:  
+            1. Válasszon egy adatbázist a bal oldali menüből, VAGY  
+            2. Töltsön fel új CSV fájlt az importáláshoz
+            """)
+    elif st.session_state.model.is_database_empty():
+        st.warning("""
+            **A kiválasztott adatbázis üres!**  
+            Kérjük:  
+            1. Válasszon másik adatbázist, VAGY  
+            2. Importáljon adatot a CSV feltöltéssel, VAGY  
+            3. Frissítse az adatokat a KSH-ról
+            """)
+
+    # Optional: Add image/illustration for empty state
+    #st.image("https://example.com/empty-state-image.png", width=300)  # Replace with your image
