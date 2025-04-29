@@ -6,6 +6,9 @@ import os
 import threading
 import requests
 from contextlib import contextmanager
+from io import BytesIO
+import time
+
 
 
 # Set page config
@@ -16,7 +19,24 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-
+st.markdown(
+    """
+    <style>
+        .stDataFrame {
+            font-size: 16px !important;
+        }
+        /* Target column headers */
+        .stDataFrame th {
+            font-size: 18px !important;
+        }
+        /* Target cells */
+        .stDataFrame td {
+            font-size: 16px !important;
+        }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
 
 # =============================================
 # Thread-safe DataModel class (with all methods)
@@ -74,7 +94,7 @@ class DataModel:
             conn.commit()
 
     def import_csv(self, csv_path):
-        """Import data from CSV file with Hungarian month handling"""
+        """Import data from CSV file with Hungarian month handling and dash normalization"""
         month_map = {
             'január': 1, 'február': 2, 'március': 3, 'április': 4,
             'május': 5, 'június': 6, 'július': 7, 'augusztus': 8,
@@ -88,6 +108,8 @@ class DataModel:
             except UnicodeDecodeError:
                 df = pd.read_csv(csv_path, header=1, encoding='Windows-1250', delimiter=';')
 
+            # NORMALIZE ALL DASHES (BEFORE PROCESSING)
+            df = df.map(lambda x: x.replace('–', '-') if isinstance(x, str) else x)
             df.replace("..", None, inplace=True)
 
             # Detect if monthly data (columns contain dots like "2021.január")
@@ -351,6 +373,7 @@ class DataModel:
 if 'model' not in st.session_state:
     st.session_state.model = DataModel(db_name=None)  # No default database
     st.session_state.products_table = pd.DataFrame(columns=['id', 'name'])
+    st.session_state.selected_products = []
 
 # Initialize table data in session state
 if 'products_table' not in st.session_state:
@@ -360,63 +383,148 @@ if 'products_table' not in st.session_state:
         st.session_state.products_table = pd.DataFrame(columns=['id', 'name'])
         st.warning("No products found in database. Please import data first.")
 
+
 # SIDEBAR - Data management and database selection
 with st.sidebar:
+    #st.markdown("---")  # Horizontal line
+    st.markdown("""
+            <div style="text-align: center;">
+                <p style="font-weight: bold; margin-bottom: 0;">Árfigyelő alkalmazás</p>
+                <p style="font-size: 0.9em; margin-top: 0;">Készítette: Recseg Róbert</p>
+            </div>
+            """, unsafe_allow_html=True)
+    st.markdown("---")  # Horizontal line
+
+
     st.header("Adatkezelés")
 
     with st.expander("Adatbázis kezelése", expanded=False):
         # Database selection dropdown
         db_files = [f for f in os.listdir() if f.endswith('.db')]
+        if 'selected_db' not in st.session_state:
+            st.session_state.selected_db = None
+
+        if 'allow_new_import' not in st.session_state:
+            st.session_state.allow_new_import = False
+
+        if 'show_csv_uploader' not in st.session_state:
+            st.session_state.show_csv_uploader = True
+
+        if 'new_import_requested' not in st.session_state:
+            st.session_state.new_import_requested = False
+
+        # Find the index of the selected database
+        selected_index = None
+        if st.session_state.selected_db in db_files:
+            selected_index = db_files.index(st.session_state.selected_db)
+
+        # Database selection dropdown - fixed version
+        db_files = [f for f in os.listdir() if f.endswith('.db')]
         selected_db = st.selectbox(
             "Aktív adatbázis",
             options=db_files,
+            index=db_files.index(st.session_state.selected_db) if st.session_state.get(
+                'selected_db') in db_files else 0,
             key='db_selector',
-            index=None,  # No default selection
             placeholder="Válasszon adatbázist...",
         )
-        if selected_db:
+
+        # Handle selection change
+        if st.session_state.get('db_selector') != st.session_state.get('selected_db'):
             try:
-                if not hasattr(st.session_state, 'model') or selected_db != getattr(st.session_state.model, 'db_name',
-                                                                                    None):
-                    st.session_state.model = DataModel(selected_db)
-                    if st.session_state.model.is_database_empty():
-                        st.warning("A kiválasztott adatbázis üres!")
-                    st.session_state.products_table = st.session_state.model.get_products_table_data()
+                st.session_state.selected_db = st.session_state.db_selector
+                st.session_state.model = DataModel(st.session_state.selected_db)
+                st.session_state.products_table = st.session_state.model.get_products_table_data()
+                st.rerun()
             except Exception as e:
                 st.error(f"Hiba az adatbázis betöltésekor: {str(e)}")
 
+        #if selected_db:
+        #   try:
+        #       if not hasattr(st.session_state, 'model') or selected_db != getattr(st.session_state.model, 'db_name',
+        #                                                                           None):
+        #           st.session_state.model = DataModel(selected_db)
+        #           if st.session_state.model.is_database_empty():
+        #               st.warning("A kiválasztott adatbázis üres!")
+        #           st.session_state.products_table = st.session_state.model.get_products_table_data()
+        #           st.session_state.selected_db = selected_db  # Update the selected db in session state
+        #   except Exception as e:
+        #        st.error(f"Hiba az adatbázis betöltésekor: {str(e)}")
+
         # File uploader for manual CSV import
-        uploaded_file = st.file_uploader("Kézi CSV importálás", type=['csv'])
-        if uploaded_file is not None:
-            with st.spinner("Importálás folyamatban..."):
-                with open("temp_upload.csv", "wb") as f:
-                    f.write(uploaded_file.getbuffer())
+        if 'file_uploaded' not in st.session_state:
+            st.session_state.file_uploaded = False
 
-                # Use the exact same name as CSV but with .db extension
-                new_db_name = os.path.splitext(uploaded_file.name)[0] + ".db"
-                new_model = DataModel(new_db_name)
 
-                if new_model.import_csv("temp_upload.csv"):
-                    st.success("Sikeres importálás!")
-                    st.session_state.model = new_model
-                    st.session_state.products_table = new_model.get_products_table_data()
-                    os.remove("temp_upload.csv")
-                    st.rerun()
-                else:
-                    st.error("Importálási hiba!")
+        #if not st.session_state.get('db_loaded'):
+        #   uploaded_file = st.file_uploader("Kézi CSV importálás", type=['csv'])
+        #   if uploaded_file is not None:
+        #       with st.spinner("Importálás folyamatban..."):
+
+        if not st.session_state.get('selected_db') or st.session_state.show_csv_uploader:
+            uploaded_file = st.file_uploader(
+                "Kézi CSV importálás",
+                type=['csv'],
+                key='csv_uploader_' + str(st.session_state.new_import_requested)  # Dynamic key
+            )
+
+            if uploaded_file is not None:
+                with st.spinner("Importálás folyamatban..."):
+                    temp_csv = "temp_upload.csv"
+                    with open(temp_csv, "wb") as f:
+                        f.write(uploaded_file.getbuffer())
+
+                    new_db_name = os.path.splitext(uploaded_file.name)[0] + ".db"
+                    new_model = DataModel(new_db_name)
+
+                    if new_model.import_csv(temp_csv):
+                        st.success("Sikeres importálás!")
+                        st.session_state.model = new_model
+                        st.session_state.products_table = new_model.get_products_table_data()
+                        os.remove(temp_csv)
+                        st.session_state.selected_db = new_db_name
+                        st.session_state.show_csv_uploader = False
+                        st.session_state.new_import_requested = False
+                        st.rerun()
+                    """
+                    if new_model.import_csv(temp_csv):
+                        st.session_state.db_loaded = True
+                        st.success("Sikeres importálás!")
+                        st.rerun()"""
+                    """
+                    if new_model.import_csv(temp_csv):
+                        st.success("Sikeres importálás!")
+                        st.session_state.model = new_model
+                        st.session_state.products_table = new_model.get_products_table_data()
+                        os.remove(temp_csv)
+
+                        # Update the selected database through the widget state
+                        st.session_state.db_selector = new_db_name
+                        st.session_state.selected_db = new_db_name
+
+                        # Add a small delay before rerun to ensure state is updated
+                        time.sleep(0.1)
+                        st.rerun()
+                    """
+            else:
+                st.error("Nincs fájl kiválasztva!")
+
+        if st.session_state.get('selected_db'):
+            if st.button("Új CSV importálása", key='new_csv_import'):
+                st.session_state.show_csv_uploader = True
+                st.session_state.new_import_requested = True
+                st.rerun()
 
         # Single update button with fixed functionality
-        if st.button("Adatok frissítése a KSH-ról", key='ksh_update'):
+        if st.button("Havi KSH adatok frissítése", key='ksh_update'):
             with st.spinner("KSH adatok letöltése..."):
                 try:
                     ksh_url = "https://www.ksh.hu/stadat_files/ara/hu/ara0044.csv"
-                    db_name = "stadat-ara0044-1.2.1.8-hu_autoupdated_web.db"
+                    db_name = "KSH_HAVI_stadat-ara0044-1.2.1.8-hu_autoupdated_web.db"
 
-                    # Download the file with timeout
                     response = requests.get(ksh_url, timeout=10)
                     response.raise_for_status()
 
-                    # Save temporary file
                     temp_csv = "ksh_latest.csv"
                     with open(temp_csv, "wb") as f:
                         f.write(response.content)
@@ -424,10 +532,47 @@ with st.sidebar:
                     # Create and import to new database
                     new_model = DataModel(db_name)
                     if new_model.import_csv(temp_csv):
-                        st.success(f"Sikeres frissítés! Adatbázis: {db_name}")
+                        #st.success(f"Sikeres frissítés! Adatbázis: {db_name}")
                         st.session_state.model = new_model
                         st.session_state.products_table = new_model.get_products_table_data()
                         os.remove(temp_csv)
+                        # Update both session state and dropdown
+                        st.session_state.selected_db = db_name
+                        st.session_state.selected_db_widget = db_name
+                        st.rerun()
+                    else:
+                        st.error("Hiba az adatbázis létrehozásakor!")
+
+                except requests.exceptions.RequestException as e:
+                    st.error(f"Hiba a letöltéskor: {str(e)}")
+                except Exception as e:
+                   st.error(f"Váratlan hiba: {str(e)}")
+        # Add new yearly data update button
+        if st.button("Éves KSH adatok frissítése", key='ksh_yearly_update'):
+            with st.spinner("KSH éves adatok letöltése..."):
+                try:
+                    ksh_url = "https://www.ksh.hu/stadat_files/ara/hu/ara0004.csv"
+                    db_name = "KSH_EVES_stadat-ara0004-1.2.1.8-hu_autoupdated_web.db"
+
+                    # Download the file with timeout
+                    response = requests.get(ksh_url, timeout=10)
+                    response.raise_for_status()
+
+                    # Save temporary file
+                    temp_csv = "ksh_yearly_latest.csv"
+                    with open(temp_csv, "wb") as f:
+                        f.write(response.content)
+
+                    # Create and import to new database
+                    new_model = DataModel(db_name)
+                    if new_model.import_csv(temp_csv):
+                        #st.success(f"Sikeres frissítés! Adatbázis: {db_name}")
+                        st.session_state.model = new_model
+                        st.session_state.products_table = new_model.get_products_table_data()
+                        os.remove(temp_csv)
+                        # Update both session state and dropdown
+                        st.session_state.selected_db = db_name
+                        st.session_state.selected_db_widget = db_name
                         st.rerun()
                     else:
                         st.error("Hiba az adatbázis létrehozásakor!")
@@ -436,6 +581,8 @@ with st.sidebar:
                     st.error(f"Hiba a letöltéskor: {str(e)}")
                 except Exception as e:
                     st.error(f"Váratlan hiba: {str(e)}")
+
+
 
 # =============================================
 # Main UI - Modified with Empty State Handling
@@ -516,19 +663,42 @@ if (hasattr(st.session_state, 'model') and st.session_state.model.db_name and no
                 formatted_df['avg_price'] = formatted_df['avg_price'].apply(
                     lambda x: f"{int(x):,} Ft".replace(",", " ") if pd.notnull(x) else "-")
 
-            # Display the table
-            st.dataframe(
-                formatted_df,
-                column_config={
-                    "id": None,
-                    "name": "Terméknév",
-                    "start_price": "Kezdő ár",
-                    "end_price": "Záró ár",
-                    "price_diff": "Árkülönbség",
-                    "avg_price": "Átlagár"},
-                hide_index=True,
-                use_container_width=True,
-                height=600)
+
+
+
+            # Display the table with invisible checkboxes
+            if not display_df.empty:
+                # Create a copy for display with a select column
+                display_df_with_select = display_df.copy()
+                display_df_with_select.insert(0, 'select', False)  # Add checkbox column as first column
+
+                # Display editable dataframe with custom styling
+                edited_df = st.data_editor(
+                    display_df_with_select,
+                    column_config={
+                        "select": st.column_config.CheckboxColumn(
+                            "",  # Empty string for no label
+                            help="Válassza ki a vizualizálni kívánt termékeket",
+                            default=False
+                        ),
+                        "id": None,
+                        "name": "Terméknév",
+                        "start_price": "Kezdő ár",
+                        "end_price": "Záró ár",
+                        "price_diff": "Árkülönbség",
+                        "avg_price": "Átlagár"
+                    },
+                    hide_index=True,
+                    use_container_width=True,
+                    height=600,
+                    disabled=display_df.columns.tolist(),  # Disable editing for all columns except checkbox
+                    key="product_table_editor"
+                )
+
+                # Update selected products when checkboxes change
+                if "product_table_editor" in st.session_state:
+                    selected_rows = edited_df[edited_df['select']]
+                    st.session_state.selected_products = selected_rows['name'].tolist()
 
     # RIGHT COLUMN - Visualization only
     with right_col:
@@ -541,9 +711,10 @@ if (hasattr(st.session_state, 'model') and st.session_state.model.db_name and no
                 "Válasszon termékeket az ábrázoláshoz",
                 placeholder="Ide kattintva tud választani a listából",
                 options=st.session_state.products_table['name'].tolist(),
-                default=st.session_state.products_table['name'].iloc[0] if len(
-                    st.session_state.products_table) > 0 else None
+                default=st.session_state.selected_products  # Use the session state instead
             )
+            # Update session state with any changes from the multiselect
+            st.session_state.selected_products = selected_indices
 
         # Date range selection for visualization
         if dates:
@@ -556,6 +727,7 @@ if (hasattr(st.session_state, 'model') and st.session_state.model.db_name and no
             plot_type = st.selectbox(
                 "Ábrázolás típusa",
                 ["Vonaldiagram", "Pontdiagram", "Oszlopdiagram", "Területdiagram"],
+
                 index=0
             )
 
@@ -656,10 +828,11 @@ if (hasattr(st.session_state, 'model') and st.session_state.model.db_name and no
                                     hoverinfo='skip',
                                     hoverlabel=dict(
                                         bgcolor="white",
-                                        font_size=16,
+                                        font_size=18,
                                         font_family="Arial"
                                     )
                                 )
+
 
                             # Update x-axis to show formatted dates
                             if is_monthly:
@@ -673,12 +846,63 @@ if (hasattr(st.session_state, 'model') and st.session_state.model.db_name and no
 
                             # Rest of layout config
                             fig.update_layout(
-                                hovermode='x unified',
+                                #Hover label style
+                                hoverlabel=dict(
+                                    bgcolor='rgba(224,232,255,0.7)',
+                                    font_size=16,
+                                    font_family="Arial"
+                                ),
+                                # Move titles above
+                                title={
+                                    'text': "Árváltozás időbeli alakulása",
+                                    'y': 0.95,
+                                    'x': 0.5,
+                                    'xanchor': 'center',
+                                    'yanchor': 'top',
+                                    'font': dict(size=22),
+                                    'pad': dict(  # Add padding around title
+                                        t=10,  # Top padding (in pixels)
+                                        b=40  # Bottom padding
+                                    )
+                                },
+
+                                # Move legend above
+                                legend=dict(
+
+                                    orientation="v",
+                                    yanchor="top",
+                                    y=1.02,
+                                    xanchor="left",
+                                    x=0,
+                                    bgcolor='rgba(0,0,0,0)',  # Fully transparent background
+                                    bordercolor='rgba(0,0,0,0)',
+                                    title=None,
+                                    title_font=dict(size=18),
+                                    font=dict(size=16)
+                                ),
+
+                                # Axis labels
                                 xaxis_title='Dátum',
                                 yaxis_title='Ár (Ft)',
-                                legend_title='Termékek',
+
+                                # Remove margins to maximize plot area
+                                margin=dict(l=0, r=0, t=120, b=0),  # Adjust top (t) as needed
+
+                                # Other styling
+                                hovermode='x unified',
                                 height=600,
-                                separators="., "  # This sets space as thousand separator
+                                separators="., ",
+
+                                # Font sizes
+                                font=dict(size=18),
+                                xaxis=dict(
+                                    title_font=dict(size=20),
+                                    tickfont=dict(size=16)
+                                ),
+                                yaxis=dict(
+                                    title_font=dict(size=20),
+                                    tickfont=dict(size=16)
+                                )
                             )
 
                             st.plotly_chart(fig, use_container_width=True)
@@ -703,6 +927,3 @@ else:
             2. Importáljon adatot a CSV feltöltéssel, VAGY  
             3. Frissítse az adatokat a KSH-ról
             """)
-
-    # Optional: Add image/illustration for empty state
-    #st.image("https://example.com/empty-state-image.png", width=300)  # Replace with your image
