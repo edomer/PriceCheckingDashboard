@@ -13,7 +13,7 @@ import time
 
 # Set page config
 st.set_page_config(
-    page_title="Árfigyelő",
+    page_title="Fogyasztói árfigyelő",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -389,7 +389,7 @@ with st.sidebar:
     #st.markdown("---")  # Horizontal line
     st.markdown("""
             <div style="text-align: center;">
-                <p style="font-size: 22px; font-weight: bold; margin-bottom: 0;">Árfigyelő alkalmazás</p>
+                <p style="font-size: 22px; font-weight: bold; margin-bottom: 0;">Fogyasztói árfigyelő</p>
                 <p style="font-size: 18px; margin-top: 0;">Készítette: Recseg Róbert</p>
             </div>
             """, unsafe_allow_html=True)
