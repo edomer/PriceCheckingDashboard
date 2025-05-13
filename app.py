@@ -507,7 +507,7 @@ with st.sidebar:
                         st.rerun()
                     """
             else:
-                """Don't need to show this"""
+                #Don't need to show this
                 #st.error("Nincs fájl kiválasztva!")
 
         if st.session_state.get('selected_db'):
