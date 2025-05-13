@@ -507,7 +507,8 @@ with st.sidebar:
                         st.rerun()
                     """
             else:
-                st.error("Nincs fájl kiválasztva!")
+                """Don't need to show this"""
+                #st.error("Nincs fájl kiválasztva!")
 
         if st.session_state.get('selected_db'):
             if st.button("Új CSV importálása", key='new_csv_import'):
