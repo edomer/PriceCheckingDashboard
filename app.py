@@ -507,6 +507,7 @@ with st.sidebar:
                         st.rerun()
                     """
             else:
+                x=1
                 #Don't need to show this
                 #st.error("Nincs fájl kiválasztva!")
 
