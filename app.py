@@ -23,15 +23,15 @@ st.markdown(
     """
     <style>
         .stDataFrame {
-            font-size: 16px !important;
+            font-size: 18px !important;
         }
         /* Target column headers */
         .stDataFrame th {
-            font-size: 18px !important;
+            font-size: 20px !important;
         }
         /* Target cells */
         .stDataFrame td {
-            font-size: 16px !important;
+            font-size: 18px !important;
         }
     </style>
     """,
@@ -389,8 +389,8 @@ with st.sidebar:
     #st.markdown("---")  # Horizontal line
     st.markdown("""
             <div style="text-align: center;">
-                <p style="font-weight: bold; margin-bottom: 0;">Árfigyelő alkalmazás</p>
-                <p style="font-size: 0.9em; margin-top: 0;">Készítette: Recseg Róbert</p>
+                <p style="font-size: 22px; font-weight: bold; margin-bottom: 0;">Árfigyelő alkalmazás</p>
+                <p style="font-size: 18px; margin-top: 0;">Készítette: Recseg Róbert</p>
             </div>
             """, unsafe_allow_html=True)
     st.markdown("---")  # Horizontal line
